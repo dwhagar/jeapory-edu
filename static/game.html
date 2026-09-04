@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Classroom Jeopardy</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <h1 id="round-title">Jeopardy!</h1>
+  <div class="controls">
+    <button class="btn secondary" id="round1-btn">Jeopardy</button>
+    <button class="btn secondary" id="round2-btn">Double Jeopardy</button>
+    <button class="btn secondary" id="round3-btn">Final Jeopardy</button>
+    <button class="btn secondary" id="editor-link">Edit Questions</button>
+    <button class="btn danger" id="reset-btn">Reset Game</button>
+  </div>
+</div>
+
+<div class="scoreboard" id="scoreboard"></div>
+
+<div class="board-wrap">
+  <div class="board-grid" id="board-grid"></div>
+</div>
+
+<!-- Question / Answer modal -->
+<div class="modal-backdrop hidden" id="modal-backdrop">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="category-label" id="modal-category"></div>
+      <div class="value-label" id="modal-value"></div>
+    </div>
+
+    <div id="daily-double-banner" class="daily-double-banner hidden">DAILY DOUBLE!</div>
+
+    <!-- Wager step (daily double only) -->
+    <div id="wager-step" class="wager-form hidden">
+      <div>Who found the Daily Double?</div>
+      <div class="team-select-row" id="wager-team-row"></div>
+      <div>Enter wager:</div>
+      <input type="number" id="wager-input" min="0" step="5" value="0">
+      <button class="btn" id="wager-confirm-btn">Show Question</button>
+    </div>
+
+    <div id="qa-step" class="hidden">
+      <div class="question-body" id="modal-question"></div>
+      <div class="answer-body hidden" id="modal-answer"></div>
+
+      <div class="modal-footer">
+        <button class="btn" id="reveal-btn">Reveal Answer</button>
+        <button class="btn secondary" id="close-modal-btn">Close (no scoring)</button>
+      </div>
+
+      <div id="scoring-step" class="hidden" style="margin-top:14px;">
+        <div style="text-align:center; margin-bottom:10px;">Who answered?</div>
+        <div class="team-select-row" id="score-team-row"></div>
+        <div class="correctness-row" style="margin-top:14px;">
+          <button class="btn success" id="mark-correct-btn" disabled>Correct</button>
+          <button class="btn danger" id="mark-wrong-btn" disabled>Wrong</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="footer-links">
+  Classroom Jeopardy &middot; <a href="/editor">Question Editor</a>
+</div>
+
+<script src="/static/js/common.js"></script>
+<script src="/static/js/game.js"></script>
+</body>
+</html>

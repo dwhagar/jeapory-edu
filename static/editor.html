@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jeopardy Question Editor</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Question Editor</h1>
+  <div class="controls">
+    <button class="btn secondary" id="back-to-game">Back to Game Board</button>
+  </div>
+</div>
+
+<div class="editor-wrap">
+  <div class="hint">
+    Use <code>$...$</code> for inline math and <code>$$...$$</code> for display math,
+    e.g. <code>$x^2 + 2x$</code> or <code>$$\int_0^1 x\,dx$$</code>. Preview renders live.
+  </div>
+
+  <div class="round-tabs">
+    <button class="btn" id="tab-round-1">Jeopardy</button>
+    <button class="btn secondary" id="tab-round-2">Double Jeopardy</button>
+    <button class="btn secondary" id="tab-round-3">Final Jeopardy</button>
+  </div>
+
+  <div id="categories-container"></div>
+
+  <button class="btn" id="add-category-btn">+ Add Category</button>
+</div>
+
+<script src="/static/js/common.js"></script>
+<script src="/static/js/editor.js"></script>
+</body>
+</html>
