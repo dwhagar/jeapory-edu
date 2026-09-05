@@ -34,7 +34,9 @@ document.getElementById("db-btn").addEventListener("click", async () => {
   await flushPendingSaves();
   showDatabaseModal(true);
 });
-showDatabaseModal(true);
+// Prompt for a database on load, unless JEOPARDY_DB_NAME already chose one
+// at server startup (the button above still opens the picker manually).
+maybeShowDatabaseModalOnLoad(true);
 
 document.getElementById("add-category-btn").addEventListener("click", async () => {
   await apiPost("/api/admin/categories", { name: "New Category", round: editorState.round });

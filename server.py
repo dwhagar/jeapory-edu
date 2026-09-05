@@ -14,6 +14,11 @@ Environment variables:
     JEOPARDY_DB_DIR - directory holding the sqlite database files, one per
                      class/game (default: db/ next to this script)
     JEOPARDY_HOST  - host/interface to bind (default 127.0.0.1)
+    JEOPARDY_DB_NAME - name of the database to activate at startup (created
+                     if it doesn't exist yet). When set, the game board and
+                     editor skip the "choose a database" prompt they'd
+                     otherwise show on load; the prompt is still reachable
+                     any time via the "Back to Databases" button.
 
 Then open Chrome to:
     http://localhost:8000/           -> game board (teacher-facing / display)
@@ -22,17 +27,27 @@ Then open Chrome to:
 import io
 import json
 import os
-import re
 import shutil
-import sqlite3
 import sys
 import hashlib
 import mimetypes
+import re
 import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
+
+from sqlite_helper import (
+    connect as db_connect,
+    ensure_db_at,
+    get_meta,
+    insert_default_teams,
+    list_db_files,
+    row_to_dict,
+    sanitize_db_name,
+    set_meta,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -56,10 +71,14 @@ DB_LOCK = threading.Lock()
 # restarts via ACTIVE_FILE.
 # ---------------------------------------------------------------------------
 ACTIVE_FILE = DB_DIR / ".active"
-DB_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,64}$")
 
 _active_db_lock = threading.Lock()
 _active_db_name = DEFAULT_DB_NAME
+
+# True if JEOPARDY_DB_NAME picked the active database at startup, in which
+# case the client-side "choose a database" prompt should not auto-open (see
+# _api_list_databases and static/js/common.js's maybeShowDatabaseModalOnLoad).
+_db_selected_via_env = False
 
 
 def _migrate_legacy_db():
@@ -82,27 +101,9 @@ def _load_initial_active_name():
     return DEFAULT_DB_NAME
 
 
-def sanitize_db_name(name):
-    """Normalize a user-supplied database name to a safe "<name>.db" filename.
-
-    Appends the .db extension if missing and validates the stem against
-    DB_NAME_RE to prevent path traversal / invalid filesystem characters.
-    Raises ValueError if the name is empty or contains disallowed characters.
-    """
-    name = (name or "").strip()
-    if not name.lower().endswith(".db"):
-        name = f"{name}.db"
-    stem = name[:-3]
-    if not DB_NAME_RE.match(stem):
-        raise ValueError(
-            "Database names may only use letters, numbers, spaces, - and _ (1-64 characters)"
-        )
-    return name
-
-
 def list_databases():
     """Return the sorted filenames of every .db file in DB_DIR."""
-    return sorted(p.name for p in DB_DIR.glob("*.db"))
+    return list_db_files(DB_DIR)
 
 
 def get_active_db_name():
@@ -307,33 +308,9 @@ def get_db():
     Callers are expected to hold DB_LOCK for the duration of use (SQLite
     file access here is not itself safe for concurrent writers) and to
     close the connection when done. Rows are returned as sqlite3.Row so
-    columns can be accessed by name.
+    columns can be accessed by name (see sqlite_helper.connect).
     """
-    conn = sqlite3.connect(str(get_active_db_path()), timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
-
-
-def ensure_db_at(path):
-    """Create schema + default teams at `path` if it doesn't already exist."""
-    if not path.exists():
-        conn = sqlite3.connect(str(path), timeout=10)
-        try:
-            with open(BASE_DIR / "schema.sql") as f:
-                conn.executescript(f.read())
-            conn.execute(
-                "INSERT OR IGNORE INTO game_meta (key, value) VALUES ('current_round', '1')"
-            )
-            conn.execute(
-                "INSERT INTO teams (name, score, position) VALUES ('Team 1', 0, 0)"
-            )
-            conn.execute(
-                "INSERT INTO teams (name, score, position) VALUES ('Team 2', 0, 1)"
-            )
-            conn.commit()
-        finally:
-            conn.close()
+    return db_connect(get_active_db_path())
 
 
 def ensure_active_db():
@@ -342,32 +319,9 @@ def ensure_active_db():
     ensure_db_at(get_active_db_path())
 
 
-def get_meta(conn, key, default=None):
-    """Fetch a single key/value setting from the game_meta table (e.g.
-    "current_round"), or `default` if it hasn't been set."""
-    row = conn.execute("SELECT value FROM game_meta WHERE key=?", (key,)).fetchone()
-    return row["value"] if row else default
-
-
-def set_meta(conn, key, value):
-    """Upsert a key/value setting into the game_meta table. Does not commit;
-    the caller is responsible for committing the transaction."""
-    conn.execute(
-        "INSERT INTO game_meta (key, value) VALUES (?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        (key, str(value)),
-    )
-
-
 # ---------------------------------------------------------------------------
 # JSON helpers / row serialization
 # ---------------------------------------------------------------------------
-def row_to_dict(row):
-    """Convert a sqlite3.Row into a plain dict with every column, unfiltered
-    (used for the editor's admin endpoints, which expose raw rows)."""
-    return {k: row[k] for k in row.keys()}
-
-
 def team_to_json(row):
     """Serialize a teams row to the JSON shape sent to the client."""
     return {"id": row["id"], "name": row["name"], "score": row["score"],
@@ -752,8 +706,15 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- databases -----------------------------------------------------
     def _api_list_databases(self):
-        """GET /api/databases -> every saved database file and which one is active."""
-        self._send_json({"databases": list_databases(), "current": get_active_db_name()})
+        """GET /api/databases -> every saved database file, which one is
+        active, and whether that choice came from JEOPARDY_DB_NAME at
+        startup (so the client knows whether to auto-prompt for a database;
+        see maybeShowDatabaseModalOnLoad in static/js/common.js)."""
+        self._send_json({
+            "databases": list_databases(),
+            "current": get_active_db_name(),
+            "env_selected": _db_selected_via_env,
+        })
 
     def _api_create_database(self, body):
         """Editor-only "Save As": copy the active database's questions into
@@ -766,16 +727,12 @@ class Handler(BaseHTTPRequestHandler):
             source = get_active_db_path()
             if source.exists():
                 shutil.copy2(source, path)
-                conn = sqlite3.connect(str(path), timeout=10)
+                conn = db_connect(path)
                 try:
                     conn.execute("UPDATE questions SET used=0")
                     conn.execute("DELETE FROM teams")
-                    conn.execute("INSERT INTO teams (name, score, position) VALUES ('Team 1', 0, 0)")
-                    conn.execute("INSERT INTO teams (name, score, position) VALUES ('Team 2', 0, 1)")
-                    conn.execute(
-                        "INSERT INTO game_meta (key, value) VALUES ('current_round', '1') "
-                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
-                    )
+                    insert_default_teams(conn)
+                    set_meta(conn, "current_round", "1")
                     conn.commit()
                 finally:
                     conn.close()
@@ -920,8 +877,7 @@ class Handler(BaseHTTPRequestHandler):
                     for r in conn.execute("SELECT * FROM teams ORDER BY position, id").fetchall()
                 ]
                 conn.execute("DELETE FROM teams")
-                conn.execute("INSERT INTO teams (name, score, position) VALUES ('Team 1', 0, 0)")
-                conn.execute("INSERT INTO teams (name, score, position) VALUES ('Team 2', 0, 1)")
+                insert_default_teams(conn)
                 conn.commit()
             finally:
                 conn.close()
@@ -1139,19 +1095,26 @@ def clear_latex_cache():
 
 
 def main():
-    """Entry point: migrate any legacy database, resume the last-active
-    database, and serve HTTP requests until interrupted (Ctrl+C) or the
-    game interface's Exit button hits /api/exit."""
-    global _active_db_name
+    """Entry point: migrate any legacy database, pick the active database
+    (from JEOPARDY_DB_NAME if set, otherwise resuming the last-active one),
+    and serve HTTP requests until interrupted (Ctrl+C) or the game
+    interface's Exit button hits /api/exit."""
+    global _active_db_name, _db_selected_via_env
     _migrate_legacy_db()
-    _active_db_name = _load_initial_active_name()
+    env_db_name = os.environ.get("JEOPARDY_DB_NAME")
+    if env_db_name:
+        set_active_db_name(sanitize_db_name(env_db_name))
+        _db_selected_via_env = True
+    else:
+        _active_db_name = _load_initial_active_name()
     ensure_active_db()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Jeopardy server running at http://{HOST}:{PORT}/")
     print(f"  Game board:      http://localhost:{PORT}/")
     print(f"  Question editor: http://localhost:{PORT}/editor")
     print(f"  Database dir:    {DB_DIR}")
-    print(f"  Active database: {get_active_db_name()}")
+    print(f"  Active database: {get_active_db_name()}"
+          + (" (from JEOPARDY_DB_NAME)" if _db_selected_via_env else ""))
     try:
         server.serve_forever()
     except KeyboardInterrupt:

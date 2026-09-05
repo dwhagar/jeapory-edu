@@ -265,6 +265,26 @@ async function showDatabaseModal(allowSave) {
 }
 
 /**
+ * Called once on page load by the game board and editor to decide whether
+ * to auto-open the database picker. If the server was started with
+ * JEOPARDY_DB_NAME (see server.py), the active database was already chosen
+ * for us, so skip the prompt -- the "Back to Databases" button remains
+ * available to open it manually at any time via showDatabaseModal().
+ */
+async function maybeShowDatabaseModalOnLoad(allowSave) {
+  let envSelected = false;
+  try {
+    const data = await apiGet("/api/databases");
+    envSelected = !!data.env_selected;
+  } catch (e) {
+    // If the check itself fails, fall back to prompting as before.
+  }
+  if (!envSelected) {
+    showDatabaseModal(allowSave);
+  }
+}
+
+/**
  * Show a brief, self-dismissing message at the bottom of the screen.
  * Reuses a single toast element across calls; re-triggering resets its timer.
  */

@@ -402,4 +402,6 @@ async function init() {
 }
 
 init();
-showDatabaseModal(false); // let the teacher pick/confirm which class's database to use before playing
+// Let the teacher pick/confirm which class's database to use before playing,
+// unless JEOPARDY_DB_NAME already chose one at server startup.
+maybeShowDatabaseModalOnLoad(false);

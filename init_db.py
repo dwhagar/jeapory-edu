@@ -9,13 +9,20 @@ Usage:
     python3 init_db.py --wipe     # DROP all tables and recreate + reseed
 """
 import os
-import sqlite3
 import sys
 from pathlib import Path
 
+from sqlite_helper import (
+    build_schema,
+    connect,
+    insert_default_teams,
+    is_empty,
+    set_meta,
+    wipe,
+)
+
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = os.environ.get("JEOPARDY_DB", str(BASE_DIR / "jeopardy.db"))
-SCHEMA_PATH = BASE_DIR / "schema.sql"
 
 # Sample seed data for Round 1 (Jeopardy) and Round 2 (Double Jeopardy).
 # Each category is a tuple of (category_name, questions), where each
@@ -107,34 +114,6 @@ SAMPLE_FINAL = ("Astronomy", r"This dwarf planet, discovered in 1930, was reclas
                 r"What is Pluto?")
 
 
-def build_schema(conn):
-    """Create any missing tables/indexes by (re-)running schema.sql.
-
-    Uses `CREATE TABLE IF NOT EXISTS`, so this is safe to call on a
-    database that already has data.
-    """
-    with open(SCHEMA_PATH, "r") as f:
-        conn.executescript(f.read())
-    conn.commit()
-
-
-def wipe(conn):
-    """Drop all game tables so the schema and sample data can be rebuilt from scratch."""
-    conn.executescript("""
-        DROP TABLE IF EXISTS questions;
-        DROP TABLE IF EXISTS categories;
-        DROP TABLE IF EXISTS teams;
-        DROP TABLE IF EXISTS game_meta;
-    """)
-    conn.commit()
-
-
-def is_empty(conn):
-    """Return True if the categories table has no rows (a freshly created database)."""
-    cur = conn.execute("SELECT COUNT(*) FROM categories")
-    return cur.fetchone()[0] == 0
-
-
 def seed(conn):
     """Populate an empty database with the sample categories, questions, Final
     Jeopardy clue, two default teams, and current_round=1."""
@@ -165,12 +144,8 @@ def seed(conn):
         (cat_id, fq, fa),
     )
 
-    conn.execute("INSERT INTO teams (name, score, position) VALUES ('Team 1', 0, 0)")
-    conn.execute("INSERT INTO teams (name, score, position) VALUES ('Team 2', 0, 1)")
-    conn.execute(
-        "INSERT INTO game_meta (key, value) VALUES ('current_round', '1') "
-        "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
-    )
+    insert_default_teams(conn)
+    set_meta(conn, "current_round", "1")
     conn.commit()
 
 
@@ -178,7 +153,7 @@ def main():
     """CLI entry point: build/refresh the schema, seeding sample data on an
     empty database or, with --wipe, unconditionally."""
     wipe_flag = "--wipe" in sys.argv
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect(DB_PATH)
     if wipe_flag:
         print(f"Wiping database at {DB_PATH} ...")
         wipe(conn)
