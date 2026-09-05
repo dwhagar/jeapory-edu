@@ -1,3 +1,7 @@
+/* Shared stylesheet for both game.html (the board/scoreboard/modal) and
+   editor.html (the question editor). Classic Jeopardy palette: blue board,
+   gold trim, white text. */
+
 :root {
   --board-blue: #060ce9;
   --board-blue-dark: #04068f;
@@ -12,6 +16,7 @@
 
 * { box-sizing: border-box; }
 
+/* Generic visibility toggle, applied/removed via classList from JS. */
 .hidden { display: none !important; }
 
 html, body {
@@ -54,6 +59,9 @@ button {
   flex-wrap: wrap;
 }
 
+/* Base button style; min-height 44px keeps buttons comfortably tappable on
+   the touchscreens/Chromebooks this app targets. Variant classes below only
+   override color, so they can be combined with .secondary etc. as needed. */
 .btn {
   background: var(--board-blue);
   color: var(--white);
@@ -71,7 +79,10 @@ button {
 .btn.success { border-color: var(--correct-green); background: #0f3d1f; }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* ---------- board ---------- */
+/* ---------- board ----------
+   The category header row and the grid of value cells beneath it. Column
+   count is set inline by game.js (renderBoard) to match the category count,
+   since it's data-driven rather than fixed. */
 .board-wrap {
   padding: 12px;
   display: flex;
@@ -132,7 +143,8 @@ button {
   letter-spacing: 0.5px;
 }
 
-/* ---------- scoreboard ---------- */
+/* ---------- scoreboard ----------
+   Team name/score/action cards, sticky at the top of the board view. */
 .scoreboard {
   display: flex;
   flex-wrap: wrap;
@@ -229,7 +241,10 @@ body.modal-open .scoreboard .team-score {
   min-height: 36px;
 }
 
-/* ---------- modal / question overlay ---------- */
+/* ---------- modal / question overlay ----------
+   Full-screen backdrop + centered dialog shown when a board cell is
+   clicked; walks through the daily-double wager step (if any), the
+   question, the revealed answer, and per-team scoring buttons. */
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -304,6 +319,8 @@ body.modal-open .modal-backdrop .modal {
 
 .answer-body.hidden { display: none; }
 
+/* <img> tags injected by common.js's renderRichText() for each rendered
+   LaTeX math segment; vertical-align keeps them level with surrounding text. */
 .latex-img {
   vertical-align: middle;
   margin: 0 2px;
@@ -394,7 +411,9 @@ body.modal-open .modal-backdrop .modal {
   text-shadow: 2px 2px 0 #000;
 }
 
-/* ---------- editor page ---------- */
+/* ---------- editor page ----------
+   Layout for editor.html: round tabs, one .category-block per category,
+   each containing a .question-row per question with live-preview fields. */
 .editor-wrap {
   padding: 16px;
   display: flex;
@@ -439,6 +458,9 @@ body.modal-open .modal-backdrop .modal {
   min-width: 150px;
 }
 
+/* Columns: value/daily-double, question textarea+preview, answer
+   textarea+preview, row actions (delete/used). Collapses to a 2-column wrap
+   on narrow screens rather than trying to keep 5 cramped columns. */
 .question-row {
   background: var(--board-blue-dark);
   border: 1px solid #3a3d7a;
@@ -511,6 +533,8 @@ body.modal-open .modal-backdrop .modal {
   color: #b7b9e6;
 }
 
+/* Bottom-of-screen transient message, shown/hidden by common.js's showToast()
+   via the .show class (opacity transition rather than display, so it fades). */
 .toast {
   position: fixed;
   bottom: 20px;

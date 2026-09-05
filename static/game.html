@@ -1,3 +1,8 @@
+<!--
+  Game board: the teacher/display-facing page. Static shell only -- the
+  scoreboard, board grid, and modal contents are all populated by game.js,
+  which drives everything through the JSON API in server.py.
+-->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -16,19 +21,25 @@
     <button class="btn secondary" id="round3-btn">Final Jeopardy</button>
     <button class="btn secondary" id="editor-link">Edit Questions</button>
     <button class="btn secondary" id="db-btn">Back to Databases</button>
+    <!-- Reverts the single most recent reversible action (see server.py's undo helpers). -->
     <button class="btn secondary" id="undo-btn">Undo</button>
     <button class="btn danger" id="reset-btn">Reset Game</button>
+    <!-- Shuts down the Python server itself, not just this browser tab. -->
     <button class="btn danger" id="exit-btn">Exit</button>
   </div>
 </div>
 
+<!-- Filled by game.js's renderScoreboard() with one .team-card per team. -->
 <div class="scoreboard" id="scoreboard"></div>
 
 <div class="board-wrap">
+  <!-- Filled by game.js's renderBoard() with the category header row and value-cell grid. -->
   <div class="board-grid" id="board-grid"></div>
 </div>
 
-<!-- Question / Answer modal -->
+<!-- Question / Answer modal: opened by game.js's openQuestion() when a
+     board cell is clicked. Walks through an optional daily-double wager
+     step, then the question, the revealed answer, and per-team scoring. -->
 <div class="modal-backdrop hidden" id="modal-backdrop">
   <div class="modal">
     <div class="modal-header">
@@ -38,7 +49,7 @@
 
     <div id="daily-double-banner" class="daily-double-banner hidden">DAILY DOUBLE!</div>
 
-    <!-- Wager step (daily double only) -->
+    <!-- Wager step (daily double only): pick which team found it and how much to wager. -->
     <div id="wager-step" class="wager-form hidden">
       <div>Who found the Daily Double?</div>
       <div class="team-select-row" id="wager-team-row"></div>
@@ -47,6 +58,7 @@
       <button class="btn" id="wager-confirm-btn">Show Question</button>
     </div>
 
+    <!-- Question/answer step: clue text, then (after Reveal Answer) the answer and scoring buttons. -->
     <div id="qa-step" class="hidden">
       <div class="question-body" id="modal-question"></div>
       <div class="answer-body hidden" id="modal-answer"></div>
@@ -56,6 +68,7 @@
         <button class="btn secondary" id="close-modal-btn">Close (no scoring)</button>
       </div>
 
+      <!-- Shown only after the answer is revealed; one +/- card per team, worth the question's value. -->
       <div id="scoring-step" class="hidden" style="margin-top:14px;">
         <div style="text-align:center; margin-bottom:10px;">Award points</div>
         <div class="team-score-row" id="team-score-row"></div>

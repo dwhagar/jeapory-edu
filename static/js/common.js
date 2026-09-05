@@ -1,11 +1,20 @@
 // Shared helpers used by both the game board and the editor.
 
+/**
+ * GET `url` and parse the response as JSON.
+ * Throws an Error with the HTTP status if the request did not succeed.
+ */
 async function apiGet(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`GET ${url} failed: ${res.status}`);
   return res.json();
 }
 
+/**
+ * Send a JSON request body to `url` with the given HTTP `method` and parse
+ * the JSON response. On failure, throws an Error using the server's
+ * `{error: "..."}` message when present, otherwise a generic status message.
+ */
 async function apiSend(method, url, body) {
   const res = await fetch(url, {
     method,
@@ -23,6 +32,7 @@ async function apiSend(method, url, body) {
   return res.json();
 }
 
+// Convenience wrappers around apiSend for the three write methods the API uses.
 const apiPost = (url, body) => apiSend("POST", url, body);
 const apiPut = (url, body) => apiSend("PUT", url, body);
 const apiDelete = (url) => apiSend("DELETE", url);
@@ -38,7 +48,10 @@ function renderRichText(container, text, opts = {}) {
   if (!text) return;
   const color = opts.color || "#FFFFFF";
 
-  // Split on $$...$$ first, then $...$ within the remaining plain segments.
+  // Pass 1: split on $$...$$ (display math) first, since it can itself
+  // contain a lone unmatched-looking $ that would otherwise confuse the
+  // simpler inline-math pass below. Everything not consumed as display
+  // math is left as a "text" piece to be re-scanned in pass 2.
   const blockRe = /\$\$(.+?)\$\$/gs;
   let lastIndex = 0;
   let match;
@@ -55,6 +68,8 @@ function renderRichText(container, text, opts = {}) {
     pieces.push({ type: "text", value: text.slice(lastIndex) });
   }
 
+  // Pass 2: within each remaining plain-text piece, split on $...$ (inline
+  // math). Math pieces from pass 1 are carried through unchanged.
   const finalPieces = [];
   const inlineRe = /\$(.+?)\$/g;
   for (const piece of pieces) {
@@ -73,6 +88,9 @@ function renderRichText(container, text, opts = {}) {
     if (li < t.length) finalPieces.push({ type: "text", value: t.slice(li) });
   }
 
+  // Render: plain text becomes a <span> via textContent (never innerHTML,
+  // so user-entered clue/answer text can't inject markup); math becomes an
+  // <img> pointing at the server's on-the-fly LaTeX renderer.
   for (const piece of finalPieces) {
     if (piece.type === "text") {
       if (piece.value === "") continue;
@@ -103,6 +121,12 @@ function renderRichText(container, text, opts = {}) {
  * unplayed board and default teams -- meant for cloning one built game
  * into a separate copy per class period.
  */
+/**
+ * If the current page (the editor) has registered a `flushPendingSaves`
+ * hook for its debounced autosave, call it and wait for any in-flight
+ * edits to reach the server before we switch/copy databases out from
+ * under it. A no-op on pages (like the game board) that don't define it.
+ */
 async function _flushPendingSavesIfAny() {
   if (typeof window.flushPendingSaves === "function") {
     try {
@@ -113,8 +137,9 @@ async function _flushPendingSavesIfAny() {
   }
 }
 
-let _dbModal = null;
+let _dbModal = null; // lazily built and cached so repeat opens reuse the same DOM
 
+/** Build the (initially hidden) database-picker modal and cache it in _dbModal. */
 function _buildDbModal() {
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop hidden";
@@ -199,6 +224,11 @@ function _buildDbModal() {
   return _dbModal;
 }
 
+/**
+ * Open the database-picker modal, populated with the current list of saved
+ * databases fetched from the server. Pass `allowSave` to also show the
+ * "Save As New" row (used by the editor, not the game board).
+ */
 async function showDatabaseModal(allowSave) {
   const m = _dbModal || _buildDbModal();
   m.saveRow.classList.toggle("hidden", !allowSave);
@@ -234,6 +264,10 @@ async function showDatabaseModal(allowSave) {
   }
 }
 
+/**
+ * Show a brief, self-dismissing message at the bottom of the screen.
+ * Reuses a single toast element across calls; re-triggering resets its timer.
+ */
 function showToast(message, ms = 2200) {
   let toast = document.getElementById("global-toast");
   if (!toast) {

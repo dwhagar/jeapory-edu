@@ -1,3 +1,10 @@
+<!--
+  Question editor: lets the teacher build/edit the categories and questions
+  for each round. All content here is populated dynamically by editor.js,
+  which fetches/saves via the /api/admin/* endpoints in server.py; this
+  markup only provides the static shell (topbar, hint text, round tabs, and
+  the empty containers editor.js fills in).
+-->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -11,6 +18,7 @@
 <div class="topbar">
   <h1>Question Editor</h1>
   <div class="controls">
+    <!-- Flushes any pending autosaves, then opens the database picker (with "Save As New" enabled). -->
     <button class="btn secondary" id="db-btn">Save &amp; Back to Databases</button>
     <button class="btn secondary" id="back-to-game">Back to Game Board</button>
   </div>
@@ -22,12 +30,14 @@
     e.g. <code>$x^2 + 2x$</code> or <code>$$\int_0^1 x\,dx$$</code>. Preview renders live.
   </div>
 
+  <!-- Selects which round's categories loadCategories() fetches and displays. -->
   <div class="round-tabs">
     <button class="btn" id="tab-round-1">Jeopardy</button>
     <button class="btn secondary" id="tab-round-2">Double Jeopardy</button>
     <button class="btn secondary" id="tab-round-3">Final Jeopardy</button>
   </div>
 
+  <!-- Filled by editor.js's renderCategories() with one .category-block per category. -->
   <div id="categories-container"></div>
 
   <button class="btn" id="add-category-btn">+ Add Category</button>

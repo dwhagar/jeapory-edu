@@ -1,6 +1,10 @@
 // Question editor controller.
+//
+// Renders one round's categories/questions as editable form rows and
+// autosaves each field to the server (via /api/admin/*) a short debounce
+// interval after the user stops typing, showing a "Saved" toast on success.
 
-const editorState = { round: 1 };
+const editorState = { round: 1 }; // which round's categories are currently shown
 
 const container = document.getElementById("categories-container");
 const tabs = {
@@ -9,6 +13,7 @@ const tabs = {
   3: document.getElementById("tab-round-3"),
 };
 
+/** Switch the editor to a different round: update tab styling and reload its categories. */
 function setActiveTab(round) {
   editorState.round = round;
   for (const [r, btn] of Object.entries(tabs)) {
@@ -36,6 +41,11 @@ document.getElementById("add-category-btn").addEventListener("click", async () =
   await loadCategories();
 });
 
+/**
+ * Return a wrapped version of `fn` that only actually runs `ms` milliseconds
+ * after the last call, discarding intermediate calls. Used to throttle the
+ * live LaTeX preview so it doesn't re-render on every keystroke.
+ */
 function debounce(fn, ms) {
   let t;
   return (...args) => {
@@ -49,10 +59,17 @@ function debounce(fn, ms) {
 // (e.g. right before switching databases, so a just-typed edit isn't lost).
 const pendingSaves = new Set();
 
+/**
+ * Like debounce(), but for calls that persist to the server: the pending
+ * call is tracked in `pendingSaves` (with only the latest arguments kept)
+ * so flushPendingSaves() can force it through immediately, e.g. right
+ * before switching databases so a just-typed edit isn't lost.
+ */
 function debounceSave(fn, ms) {
   let timer = null;
   let latestArgs = null;
   const entry = {
+    // Force this pending call through right now, if one is scheduled.
     flush: async () => {
       if (timer === null) return;
       clearTimeout(timer);
@@ -77,16 +94,21 @@ function debounceSave(fn, ms) {
   };
 }
 
+/** Immediately run every currently-pending debounceSave() call, in parallel. */
 async function flushPendingSaves() {
   await Promise.all([...pendingSaves].map((entry) => entry.flush()));
 }
+// Exposed globally so common.js's database-switch/save-as flow can flush
+// in-flight edits before it reloads the page onto a different database.
 window.flushPendingSaves = flushPendingSaves;
 
+/** Fetch the current round's categories/questions and re-render them. */
 async function loadCategories() {
   const data = await apiGet(`/api/admin/categories?round=${editorState.round}`);
   renderCategories(data.categories);
 }
 
+/** Replace the categories container's contents with one block per category. */
 function renderCategories(categories) {
   container.innerHTML = "";
   for (const cat of categories) {
@@ -94,6 +116,11 @@ function renderCategories(categories) {
   }
 }
 
+/**
+ * Build the editable panel for one category: a renamable title, an "Add
+ * Question"/"Delete Category" action row, and one buildQuestionRow() per
+ * question already in the category.
+ */
 function buildCategoryBlock(cat) {
   const block = document.createElement("div");
   block.className = "category-block";
@@ -149,6 +176,11 @@ function buildCategoryBlock(cat) {
   return block;
 }
 
+/**
+ * Build one editable question row: value/daily-double controls, clue and
+ * answer textareas each with a live LaTeX preview underneath, and delete /
+ * used-flag controls. Every field autosaves to the server via debounceSave.
+ */
 function buildQuestionRow(q) {
   const row = document.createElement("div");
   row.className = "question-row";

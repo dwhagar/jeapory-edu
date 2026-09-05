@@ -17,6 +17,13 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = os.environ.get("JEOPARDY_DB", str(BASE_DIR / "jeopardy.db"))
 SCHEMA_PATH = BASE_DIR / "schema.sql"
 
+# Sample seed data for Round 1 (Jeopardy) and Round 2 (Double Jeopardy).
+# Each category is a tuple of (category_name, questions), where each
+# question is a tuple of (value, question_text, answer_text, is_daily_double).
+# question_text/answer_text may contain LaTeX math delimited by $...$, which
+# the server renders to an image at display time (see server.py's
+# render_latex_png). is_daily_double is 1 for exactly one question per round
+# by convention, 0 otherwise.
 SAMPLE_CATEGORIES_R1 = [
     ("Algebra", [
         (100, r"Solve for $x$: $2x + 4 = 10$", r"$x = 3$", 0),
@@ -93,17 +100,26 @@ SAMPLE_CATEGORIES_R2 = [
     ]),
 ]
 
+# The single Final Jeopardy category/question, as (category_name,
+# question_text, answer_text). Final Jeopardy has no point value or
+# daily-double flag since the wager is entered live during play.
 SAMPLE_FINAL = ("Astronomy", r"This dwarf planet, discovered in 1930, was reclassified in 2006.",
                 r"What is Pluto?")
 
 
 def build_schema(conn):
+    """Create any missing tables/indexes by (re-)running schema.sql.
+
+    Uses `CREATE TABLE IF NOT EXISTS`, so this is safe to call on a
+    database that already has data.
+    """
     with open(SCHEMA_PATH, "r") as f:
         conn.executescript(f.read())
     conn.commit()
 
 
 def wipe(conn):
+    """Drop all game tables so the schema and sample data can be rebuilt from scratch."""
     conn.executescript("""
         DROP TABLE IF EXISTS questions;
         DROP TABLE IF EXISTS categories;
@@ -114,11 +130,14 @@ def wipe(conn):
 
 
 def is_empty(conn):
+    """Return True if the categories table has no rows (a freshly created database)."""
     cur = conn.execute("SELECT COUNT(*) FROM categories")
     return cur.fetchone()[0] == 0
 
 
 def seed(conn):
+    """Populate an empty database with the sample categories, questions, Final
+    Jeopardy clue, two default teams, and current_round=1."""
     for round_num, cat_set in ((1, SAMPLE_CATEGORIES_R1), (2, SAMPLE_CATEGORIES_R2)):
         for pos, (cat_name, questions) in enumerate(cat_set):
             cur = conn.execute(
@@ -156,6 +175,8 @@ def seed(conn):
 
 
 def main():
+    """CLI entry point: build/refresh the schema, seeding sample data on an
+    empty database or, with --wipe, unconditionally."""
     wipe_flag = "--wipe" in sys.argv
     conn = sqlite3.connect(DB_PATH)
     if wipe_flag:

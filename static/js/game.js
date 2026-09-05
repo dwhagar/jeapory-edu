@@ -1,11 +1,16 @@
 // Game board controller.
+//
+// Drives the teacher-facing display: the scoreboard, the clickable board
+// grid, and the question/answer modal (including the daily-double wager
+// step). All game state lives server-side; this file just reflects it and
+// posts the actions a click represents.
 
 const state = {
-  round: 1,
-  teams: [],
-  currentQuestion: null,
-  wagerTeamId: null,
-  marking: false,
+  round: 1,              // current round number (1, 2, or 3/Final)
+  teams: [],              // last-fetched team rows, kept in sync via updateTeamLocal
+  currentQuestion: null,  // the question object shown in the open modal, or null
+  wagerTeamId: null,      // team id selected during a daily-double wager step
+  marking: false,         // true while a mark-question request is in flight (prevents double-submits)
 };
 
 const ROUND_NAMES = { 1: "Jeopardy!", 2: "Double Jeopardy!", 3: "Final Jeopardy!" };
@@ -28,12 +33,14 @@ const revealBtn = document.getElementById("reveal-btn");
 const scoringStep = document.getElementById("scoring-step");
 const teamScoreRow = document.getElementById("team-score-row");
 
+/** Fetch the current teams from the server and re-render the scoreboard. */
 async function loadTeams() {
   const data = await apiGet("/api/teams");
   state.teams = data.teams;
   renderScoreboard();
 }
 
+/** Rebuild the scoreboard: one card per team (name, score, +/-/edit/remove) plus an "Add Team" card. */
 function renderScoreboard() {
   scoreboardEl.innerHTML = "";
   for (const team of state.teams) {
@@ -120,12 +127,14 @@ function renderScoreboard() {
   scoreboardEl.appendChild(addCard);
 }
 
+/** Patch a single team's row into local state (from an API response) and re-render, avoiding a full refetch. */
 function updateTeamLocal(team) {
   const idx = state.teams.findIndex((t) => t.id === team.id);
   if (idx >= 0) state.teams[idx] = team;
   renderScoreboard();
 }
 
+/** Fetch the board (categories + question cells) for the current round and render it. */
 async function loadBoard() {
   const data = await apiGet(`/api/board?round=${state.round}`);
   state.round = data.round;
@@ -133,6 +142,12 @@ async function loadBoard() {
   renderBoard(data.categories);
 }
 
+/**
+ * Render the category header row and the grid of value cells beneath it.
+ * A cell shows its dollar value and is clickable while unused; once used it
+ * renders blank and inert. Categories with fewer questions than the tallest
+ * one get blank filler cells so the grid stays rectangular.
+ */
 function renderBoard(categories) {
   boardGrid.innerHTML = "";
   const numCats = categories.length || 1;
@@ -167,6 +182,11 @@ function renderBoard(categories) {
   }
 }
 
+/**
+ * Open the question modal for a clicked cell. A regular question goes
+ * straight to the question/answer step; a daily double first shows the
+ * wager step (pick the finding team, enter a wager) before revealing the clue.
+ */
 async function openQuestion(questionId) {
   const q = await apiGet(`/api/question/${questionId}`);
   state.currentQuestion = q;
@@ -202,6 +222,7 @@ async function openQuestion(questionId) {
   document.body.classList.add("modal-open");
 }
 
+/** Fill `rowEl` with one button per team; clicking a button calls `onPick(teamId)`. */
 function buildTeamRow(rowEl, onPick) {
   rowEl.innerHTML = "";
   for (const team of state.teams) {
@@ -214,6 +235,8 @@ function buildTeamRow(rowEl, onPick) {
   }
 }
 
+// Confirm the daily-double wager: stash it on the current question and
+// advance from the wager step to the question/answer step.
 document.getElementById("wager-confirm-btn").addEventListener("click", () => {
   if (!state.wagerTeamId) {
     showToast("Pick the team that found the Daily Double first");
@@ -226,6 +249,7 @@ document.getElementById("wager-confirm-btn").addEventListener("click", () => {
   renderRichText(modalQuestion, state.currentQuestion.question_text, { color: "#FFFFFF" });
 });
 
+// Reveal the answer text and expose the per-team scoring buttons.
 revealBtn.addEventListener("click", () => {
   renderRichText(modalAnswer, state.currentQuestion.answer_text, { color: "#FFD700" });
   modalAnswer.classList.remove("hidden");
@@ -233,6 +257,7 @@ revealBtn.addEventListener("click", () => {
   renderTeamScoreButtons();
 });
 
+/** Build one +/- scoring card per team, worth the question's value (or the daily-double wager). */
 function renderTeamScoreButtons() {
   teamScoreRow.innerHTML = "";
   const q = state.currentQuestion;
@@ -266,6 +291,12 @@ function renderTeamScoreButtons() {
   }
 }
 
+/**
+ * Record correct/incorrect for the given team on the currently open
+ * question, then close the modal and refresh the board. Guards against
+ * double-submission via state.marking, since scoring buttons don't disable
+ * synchronously before the network round-trip completes.
+ */
 async function submitMark(teamId, correct) {
   if (!teamId || !state.currentQuestion || state.marking) return;
   state.marking = true;
@@ -289,12 +320,14 @@ async function submitMark(teamId, correct) {
 
 document.getElementById("close-modal-btn").addEventListener("click", closeModal);
 
+/** Hide the question modal and forget the currently-open question. */
 function closeModal() {
   modalBackdrop.classList.add("hidden");
   document.body.classList.remove("modal-open");
   state.currentQuestion = null;
 }
 
+/** Switch to a different round both on the server (so it persists) and locally, then reload the board. */
 async function setRound(roundNum) {
   state.round = roundNum;
   await apiPost("/api/round", { round: roundNum });
@@ -308,6 +341,9 @@ document.getElementById("editor-link").addEventListener("click", () => {
   window.location.href = "/editor";
 });
 
+// Undo the most recent reversible server-side action (see server.py's
+// set_undo/pop_undo) and refresh both the scoreboard and the board to
+// reflect the reverted state.
 document.getElementById("undo-btn").addEventListener("click", async () => {
   try {
     const res = await apiPost("/api/undo", {});
@@ -321,6 +357,8 @@ document.getElementById("undo-btn").addEventListener("click", async () => {
 
 document.getElementById("db-btn").addEventListener("click", () => showDatabaseModal(false));
 
+// Reset flow: ask which of the four reset scopes to apply (scores/teams/
+// board/full), confirm, then hit the matching /api/reset/<scope> endpoint.
 document.getElementById("reset-btn").addEventListener("click", async () => {
   const choice = prompt(
     "Type: 'scores' to reset scores only, 'teams' to remove custom teams and reset to Team 1 & Team 2, " +
@@ -340,6 +378,8 @@ document.getElementById("reset-btn").addEventListener("click", async () => {
   showToast("Reset complete");
 });
 
+// Shut down the server (see /api/exit in server.py) and replace the page
+// with a static "stopped" message, since no further API calls will succeed.
 document.getElementById("exit-btn").addEventListener("click", async () => {
   if (!confirm("This will stop the server for everyone. Continue?")) return;
   try {
@@ -353,6 +393,7 @@ document.getElementById("exit-btn").addEventListener("click", async () => {
     "</div>";
 });
 
+/** Page bootstrap: pick up the round the server left off on, then load teams and the board. */
 async function init() {
   const roundsInfo = await apiGet("/api/rounds");
   state.round = roundsInfo.current_round || 1;
@@ -361,4 +402,4 @@ async function init() {
 }
 
 init();
-showDatabaseModal(false);
+showDatabaseModal(false); // let the teacher pick/confirm which class's database to use before playing
