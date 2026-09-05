@@ -4,7 +4,6 @@ const state = {
   round: 1,
   teams: [],
   currentQuestion: null,
-  selectedScoreTeamId: null,
   wagerTeamId: null,
   marking: false,
 };
@@ -27,9 +26,7 @@ const modalQuestion = document.getElementById("modal-question");
 const modalAnswer = document.getElementById("modal-answer");
 const revealBtn = document.getElementById("reveal-btn");
 const scoringStep = document.getElementById("scoring-step");
-const scoreTeamRow = document.getElementById("score-team-row");
-const markCorrectBtn = document.getElementById("mark-correct-btn");
-const markWrongBtn = document.getElementById("mark-wrong-btn");
+const teamScoreRow = document.getElementById("team-score-row");
 
 async function loadTeams() {
   const data = await apiGet("/api/teams");
@@ -58,6 +55,22 @@ function renderScoreboard() {
     const actions = document.createElement("div");
     actions.className = "team-actions";
 
+    const edit = document.createElement("button");
+    edit.className = "btn secondary";
+    edit.textContent = "Edit";
+    edit.addEventListener("click", async () => {
+      const entered = prompt(`Set score for ${team.name}:`, team.score);
+      if (entered === null) return;
+      const newScore = parseInt(entered, 10);
+      if (Number.isNaN(newScore)) {
+        showToast("Enter a whole number");
+        return;
+      }
+      const res = await apiPut(`/api/teams/${team.id}`, { score: newScore });
+      updateTeamLocal(res.team);
+      showToast("Score updated");
+    });
+
     const minus = document.createElement("button");
     minus.className = "btn secondary";
     minus.textContent = "-100";
@@ -85,6 +98,7 @@ function renderScoreboard() {
 
     actions.appendChild(minus);
     actions.appendChild(plus);
+    actions.appendChild(edit);
     actions.appendChild(remove);
 
     card.appendChild(nameInput);
@@ -94,7 +108,7 @@ function renderScoreboard() {
   }
 
   const addCard = document.createElement("div");
-  addCard.className = "team-card";
+  addCard.className = "team-card add-team-card";
   const addBtn = document.createElement("button");
   addBtn.className = "btn";
   addBtn.textContent = "+ Add Team";
@@ -156,7 +170,6 @@ function renderBoard(categories) {
 async function openQuestion(questionId) {
   const q = await apiGet(`/api/question/${questionId}`);
   state.currentQuestion = q;
-  state.selectedScoreTeamId = null;
   state.wagerTeamId = null;
 
   modalCategory.textContent = q.category;
@@ -164,8 +177,7 @@ async function openQuestion(questionId) {
 
   modalAnswer.classList.add("hidden");
   scoringStep.classList.add("hidden");
-  markCorrectBtn.disabled = true;
-  markWrongBtn.disabled = true;
+  teamScoreRow.innerHTML = "";
 
   if (q.is_daily_double) {
     ddBanner.classList.remove("hidden");
@@ -187,6 +199,7 @@ async function openQuestion(questionId) {
   }
 
   modalBackdrop.classList.remove("hidden");
+  document.body.classList.add("modal-open");
 }
 
 function buildTeamRow(rowEl, onPick) {
@@ -217,22 +230,47 @@ revealBtn.addEventListener("click", () => {
   renderRichText(modalAnswer, state.currentQuestion.answer_text, { color: "#FFD700" });
   modalAnswer.classList.remove("hidden");
   scoringStep.classList.remove("hidden");
-  buildTeamRow(scoreTeamRow, (teamId) => {
-    state.selectedScoreTeamId = teamId;
-    [...scoreTeamRow.children].forEach((b) =>
-      b.classList.toggle("selected", Number(b.dataset.teamId) === teamId)
-    );
-    markCorrectBtn.disabled = false;
-    markWrongBtn.disabled = false;
-  });
+  renderTeamScoreButtons();
 });
 
-async function submitMark(correct) {
-  if (!state.selectedScoreTeamId || !state.currentQuestion || state.marking) return;
+function renderTeamScoreButtons() {
+  teamScoreRow.innerHTML = "";
+  const q = state.currentQuestion;
+  const points = q.is_daily_double ? q.wager : q.value;
+  for (const team of state.teams) {
+    const card = document.createElement("div");
+    card.className = "team-score-card";
+
+    const name = document.createElement("div");
+    name.className = "team-score-card-name";
+    name.textContent = team.name;
+
+    const buttons = document.createElement("div");
+    buttons.className = "team-score-card-buttons";
+
+    const plus = document.createElement("button");
+    plus.className = "btn success";
+    plus.textContent = `+ $${points}`;
+    plus.addEventListener("click", () => submitMark(team.id, true));
+
+    const minus = document.createElement("button");
+    minus.className = "btn danger";
+    minus.textContent = `- $${points}`;
+    minus.addEventListener("click", () => submitMark(team.id, false));
+
+    buttons.appendChild(plus);
+    buttons.appendChild(minus);
+    card.appendChild(name);
+    card.appendChild(buttons);
+    teamScoreRow.appendChild(card);
+  }
+}
+
+async function submitMark(teamId, correct) {
+  if (!teamId || !state.currentQuestion || state.marking) return;
   state.marking = true;
-  markCorrectBtn.disabled = true;
-  markWrongBtn.disabled = true;
-  const body = { team_id: state.selectedScoreTeamId, correct };
+  [...teamScoreRow.querySelectorAll("button")].forEach((b) => (b.disabled = true));
+  const body = { team_id: teamId, correct };
   if (state.currentQuestion.is_daily_double) {
     body.wager = state.currentQuestion.wager;
   }
@@ -249,13 +287,11 @@ async function submitMark(correct) {
   }
 }
 
-markCorrectBtn.addEventListener("click", () => submitMark(true));
-markWrongBtn.addEventListener("click", () => submitMark(false));
-
 document.getElementById("close-modal-btn").addEventListener("click", closeModal);
 
 function closeModal() {
   modalBackdrop.classList.add("hidden");
+  document.body.classList.remove("modal-open");
   state.currentQuestion = null;
 }
 
@@ -272,14 +308,28 @@ document.getElementById("editor-link").addEventListener("click", () => {
   window.location.href = "/editor";
 });
 
+document.getElementById("undo-btn").addEventListener("click", async () => {
+  try {
+    const res = await apiPost("/api/undo", {});
+    showToast(`Undid ${res.label}`);
+    await loadTeams();
+    await loadBoard();
+  } catch (e) {
+    showToast(e.message || "Nothing to undo");
+  }
+});
+
+document.getElementById("db-btn").addEventListener("click", () => showDatabaseModal(false));
+
 document.getElementById("reset-btn").addEventListener("click", async () => {
   const choice = prompt(
-    "Type: 'scores' to reset scores only, 'board' to re-cover all questions, or 'full' to reset everything.",
+    "Type: 'scores' to reset scores only, 'teams' to remove custom teams and reset to Team 1 & Team 2, " +
+      "'board' to re-cover all questions, or 'full' to reset everything.",
     "full"
   );
   if (!choice) return;
   const normalized = choice.trim().toLowerCase();
-  if (!["scores", "board", "full"].includes(normalized)) {
+  if (!["scores", "teams", "board", "full"].includes(normalized)) {
     showToast("No changes made");
     return;
   }
@@ -290,6 +340,19 @@ document.getElementById("reset-btn").addEventListener("click", async () => {
   showToast("Reset complete");
 });
 
+document.getElementById("exit-btn").addEventListener("click", async () => {
+  if (!confirm("This will stop the server for everyone. Continue?")) return;
+  try {
+    await apiPost("/api/exit", {});
+  } catch (e) {
+    // The server may close the connection as part of shutting down; ignore.
+  }
+  document.body.innerHTML =
+    '<div style="padding:60px 20px; text-align:center; font-size:1.4rem;">' +
+    "Server stopped. You can close this tab." +
+    "</div>";
+});
+
 async function init() {
   const roundsInfo = await apiGet("/api/rounds");
   state.round = roundsInfo.current_round || 1;
@@ -298,3 +361,4 @@ async function init() {
 }
 
 init();
+showDatabaseModal(false);

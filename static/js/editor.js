@@ -25,6 +25,12 @@ document.getElementById("back-to-game").addEventListener("click", () => {
   window.location.href = "/";
 });
 
+document.getElementById("db-btn").addEventListener("click", async () => {
+  await flushPendingSaves();
+  showDatabaseModal(true);
+});
+showDatabaseModal(true);
+
 document.getElementById("add-category-btn").addEventListener("click", async () => {
   await apiPost("/api/admin/categories", { name: "New Category", round: editorState.round });
   await loadCategories();
@@ -37,6 +43,44 @@ function debounce(fn, ms) {
     t = setTimeout(() => fn(...args), ms);
   };
 }
+
+// Like debounce(), but for calls that persist to the server: pending ones
+// are tracked so flushPendingSaves() can force them through immediately
+// (e.g. right before switching databases, so a just-typed edit isn't lost).
+const pendingSaves = new Set();
+
+function debounceSave(fn, ms) {
+  let timer = null;
+  let latestArgs = null;
+  const entry = {
+    flush: async () => {
+      if (timer === null) return;
+      clearTimeout(timer);
+      timer = null;
+      const args = latestArgs;
+      latestArgs = null;
+      pendingSaves.delete(entry);
+      await fn(...args);
+    },
+  };
+  return (...args) => {
+    latestArgs = args;
+    clearTimeout(timer);
+    pendingSaves.add(entry);
+    timer = setTimeout(() => {
+      timer = null;
+      const runArgs = latestArgs;
+      latestArgs = null;
+      pendingSaves.delete(entry);
+      fn(...runArgs);
+    }, ms);
+  };
+}
+
+async function flushPendingSaves() {
+  await Promise.all([...pendingSaves].map((entry) => entry.flush()));
+}
+window.flushPendingSaves = flushPendingSaves;
 
 async function loadCategories() {
   const data = await apiGet(`/api/admin/categories?round=${editorState.round}`);
@@ -63,7 +107,7 @@ function buildCategoryBlock(cat) {
   nameInput.value = cat.name;
   nameInput.addEventListener(
     "change",
-    debounce(async () => {
+    debounceSave(async () => {
       await apiPut(`/api/admin/categories/${cat.id}`, { name: nameInput.value });
       showToast("Category saved");
     }, 300)
@@ -163,7 +207,7 @@ function buildQuestionRow(q) {
   }, 400);
   updatePreview();
 
-  const saveField = debounce(async (field, value) => {
+  const saveField = debounceSave(async (field, value) => {
     await apiPut(`/api/admin/questions/${q.id}`, { [field]: value });
     showToast("Saved");
   }, 500);

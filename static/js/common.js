@@ -94,6 +94,146 @@ function renderRichText(container, text, opts = {}) {
   }
 }
 
+/**
+ * Shared "select a database" dialog used by both the game board and the
+ * editor. Lists the .db files in the server's db/ directory; picking one
+ * (other than the current one) switches the active database and reloads
+ * the page. `allowSave` shows a "Save As New Database" row, which copies
+ * the currently active database's questions into a new file with a fresh,
+ * unplayed board and default teams -- meant for cloning one built game
+ * into a separate copy per class period.
+ */
+async function _flushPendingSavesIfAny() {
+  if (typeof window.flushPendingSaves === "function") {
+    try {
+      await window.flushPendingSaves();
+    } catch (e) {
+      // best-effort; a failed flush shouldn't block navigation
+    }
+  }
+}
+
+let _dbModal = null;
+
+function _buildDbModal() {
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop hidden";
+  backdrop.id = "db-modal-backdrop";
+  backdrop.style.zIndex = "400";
+
+  const modal = document.createElement("div");
+  modal.className = "modal";
+  modal.style.maxWidth = "480px";
+
+  const header = document.createElement("div");
+  header.className = "modal-header";
+  const title = document.createElement("div");
+  title.className = "category-label";
+  title.textContent = "Select Database";
+  header.appendChild(title);
+
+  const list = document.createElement("div");
+  list.style.display = "flex";
+  list.style.flexDirection = "column";
+  list.style.gap = "8px";
+  list.style.margin = "14px 0";
+
+  const saveRow = document.createElement("div");
+  saveRow.className = "hidden";
+  saveRow.style.borderTop = "1px dashed var(--gold)";
+  saveRow.style.paddingTop = "14px";
+  saveRow.style.marginTop = "4px";
+
+  const saveHint = document.createElement("div");
+  saveHint.className = "hint";
+  saveHint.style.marginBottom = "8px";
+  saveHint.textContent =
+    "Save a copy of the current questions as a new database, ready to play with fresh teams and an uncovered board.";
+
+  const saveInputRow = document.createElement("div");
+  saveInputRow.style.display = "flex";
+  saveInputRow.style.gap = "8px";
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.placeholder = "New database name";
+  nameInput.style.flex = "1";
+  const saveBtn = document.createElement("button");
+  saveBtn.className = "btn";
+  saveBtn.textContent = "Save As New";
+  saveInputRow.appendChild(nameInput);
+  saveInputRow.appendChild(saveBtn);
+  saveRow.appendChild(saveHint);
+  saveRow.appendChild(saveInputRow);
+
+  const footer = document.createElement("div");
+  footer.className = "modal-footer";
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "btn secondary";
+  footer.appendChild(closeBtn);
+
+  modal.appendChild(header);
+  modal.appendChild(list);
+  modal.appendChild(saveRow);
+  modal.appendChild(footer);
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+
+  closeBtn.addEventListener("click", () => backdrop.classList.add("hidden"));
+
+  saveBtn.addEventListener("click", async () => {
+    const name = nameInput.value.trim();
+    if (!name) {
+      showToast("Enter a name for the new database");
+      return;
+    }
+    await _flushPendingSavesIfAny();
+    try {
+      await apiPost("/api/databases", { name });
+      location.reload();
+    } catch (e) {
+      showToast(e.message || "Could not create database");
+    }
+  });
+
+  _dbModal = { backdrop, list, saveRow, closeBtn };
+  return _dbModal;
+}
+
+async function showDatabaseModal(allowSave) {
+  const m = _dbModal || _buildDbModal();
+  m.saveRow.classList.toggle("hidden", !allowSave);
+  m.list.textContent = "Loading...";
+  m.backdrop.classList.remove("hidden");
+  try {
+    const data = await apiGet("/api/databases");
+    m.list.innerHTML = "";
+    for (const name of data.databases) {
+      const btn = document.createElement("button");
+      const isCurrent = name === data.current;
+      btn.className = "btn" + (isCurrent ? "" : " secondary");
+      btn.textContent = isCurrent ? `${name} (current)` : name;
+      btn.style.width = "100%";
+      btn.addEventListener("click", async () => {
+        if (isCurrent) {
+          m.backdrop.classList.add("hidden");
+          return;
+        }
+        await _flushPendingSavesIfAny();
+        try {
+          await apiPost("/api/databases/select", { name });
+          location.reload();
+        } catch (e) {
+          showToast(e.message || "Could not load database");
+        }
+      });
+      m.list.appendChild(btn);
+    }
+    m.closeBtn.textContent = `Keep using ${data.current}`;
+  } catch (e) {
+    m.list.textContent = "Failed to load database list.";
+  }
+}
+
 function showToast(message, ms = 2200) {
   let toast = document.getElementById("global-toast");
   if (!toast) {

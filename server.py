@@ -11,9 +11,9 @@ Run:
     python3 server.py
 Environment variables:
     PORT           - port to listen on (default 8000)
-    JEOPARDY_DB    - path to the sqlite database file
-                     (default: jeopardy.db next to this script)
-    JEOPARDY_HOST  - host/interface to bind (default 0.0.0.0)
+    JEOPARDY_DB_DIR - directory holding the sqlite database files, one per
+                     class/game (default: db/ next to this script)
+    JEOPARDY_HOST  - host/interface to bind (default 127.0.0.1)
 
 Then open Chrome to:
     http://localhost:8000/           -> game board (teacher-facing / display)
@@ -23,6 +23,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sqlite3
 import sys
 import hashlib
@@ -38,11 +39,173 @@ STATIC_DIR = BASE_DIR / "static"
 CACHE_DIR = BASE_DIR / "latex_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
-DB_PATH = os.environ.get("JEOPARDY_DB", str(BASE_DIR / "jeopardy.db"))
+DB_DIR = Path(os.environ.get("JEOPARDY_DB_DIR", str(BASE_DIR / "db")))
+DB_DIR.mkdir(exist_ok=True)
+DEFAULT_DB_NAME = "jeopardy.db"
+
 PORT = int(os.environ.get("PORT", "8000"))
 HOST = os.environ.get("JEOPARDY_HOST", "127.0.0.1")
 
 DB_LOCK = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Multiple named databases live in DB_DIR, one sqlite file per class/game,
+# so a teacher can build one game and reuse it (via "Save As") for several
+# class periods without their scores/progress colliding. The "active" file
+# is whichever one every request currently reads/writes; it persists across
+# restarts via ACTIVE_FILE.
+# ---------------------------------------------------------------------------
+ACTIVE_FILE = DB_DIR / ".active"
+DB_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,64}$")
+
+_active_db_lock = threading.Lock()
+_active_db_name = DEFAULT_DB_NAME
+
+
+def _migrate_legacy_db():
+    """Pick up a pre-existing jeopardy.db from before the db/ dir existed."""
+    legacy = BASE_DIR / "jeopardy.db"
+    target = DB_DIR / DEFAULT_DB_NAME
+    if legacy.exists() and not target.exists():
+        shutil.move(str(legacy), str(target))
+
+
+def _load_initial_active_name():
+    if ACTIVE_FILE.exists():
+        name = ACTIVE_FILE.read_text(encoding="utf-8").strip()
+        if name and (DB_DIR / name).exists():
+            return name
+    return DEFAULT_DB_NAME
+
+
+def sanitize_db_name(name):
+    name = (name or "").strip()
+    if not name.lower().endswith(".db"):
+        name = f"{name}.db"
+    stem = name[:-3]
+    if not DB_NAME_RE.match(stem):
+        raise ValueError(
+            "Database names may only use letters, numbers, spaces, - and _ (1-64 characters)"
+        )
+    return name
+
+
+def list_databases():
+    return sorted(p.name for p in DB_DIR.glob("*.db"))
+
+
+def get_active_db_name():
+    with _active_db_lock:
+        return _active_db_name
+
+
+def get_active_db_path():
+    return DB_DIR / get_active_db_name()
+
+
+def set_active_db_name(name):
+    global _active_db_name
+    with _active_db_lock:
+        _active_db_name = name
+    ACTIVE_FILE.write_text(name, encoding="utf-8")
+
+# ---------------------------------------------------------------------------
+# Single-level undo: each reversible action registers a human-readable label
+# and a no-arg callback that restores the previous state. Only the most
+# recent action can be undone (no redo, no multi-step history).
+# ---------------------------------------------------------------------------
+UNDO_LOCK = threading.Lock()
+_last_action = {"label": None, "revert": None}
+
+
+def set_undo(label, revert):
+    with UNDO_LOCK:
+        _last_action["label"] = label
+        _last_action["revert"] = revert
+
+
+def pop_undo():
+    with UNDO_LOCK:
+        label = _last_action["label"]
+        revert = _last_action["revert"]
+        _last_action["label"] = None
+        _last_action["revert"] = None
+    return label, revert
+
+
+def peek_undo_label():
+    with UNDO_LOCK:
+        return _last_action["label"]
+
+
+def _revert_mark(qid, team_id, previous_score):
+    with DB_LOCK:
+        conn = get_db()
+        try:
+            conn.execute("UPDATE teams SET score=? WHERE id=?", (previous_score, team_id))
+            conn.execute("UPDATE questions SET used=0 WHERE id=?", (qid,))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _revert_team_state(team_id, name, score):
+    with DB_LOCK:
+        conn = get_db()
+        try:
+            conn.execute("UPDATE teams SET name=?, score=? WHERE id=?", (name, score, team_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _revert_add_team(team_id):
+    with DB_LOCK:
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM teams WHERE id=?", (team_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _revert_delete_team(row_vals):
+    with DB_LOCK:
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT INTO teams (id, name, score, position) VALUES (?, ?, ?, ?)",
+                (row_vals["id"], row_vals["name"], row_vals["score"], row_vals["position"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _revert_teams_snapshot(rows):
+    with DB_LOCK:
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM teams")
+            for r in rows:
+                conn.execute(
+                    "INSERT INTO teams (id, name, score, position) VALUES (?, ?, ?, ?)",
+                    (r["id"], r["name"], r["score"], r["position"]),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _revert_round(previous_round):
+    with DB_LOCK:
+        conn = get_db()
+        try:
+            set_meta(conn, "current_round", previous_round)
+            conn.commit()
+        finally:
+            conn.close()
+
 
 # ---------------------------------------------------------------------------
 # LaTeX rendering (matplotlib mathtext -> PNG). No external LaTeX install
@@ -106,28 +269,35 @@ def render_latex_png(tex: str, display: bool, color: str = "#FFFFFF") -> bytes:
 # Database helpers
 # ---------------------------------------------------------------------------
 def get_db():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = sqlite3.connect(str(get_active_db_path()), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
-def ensure_db():
-    if not Path(DB_PATH).exists():
-        conn = get_db()
-        with open(BASE_DIR / "schema.sql") as f:
-            conn.executescript(f.read())
-        conn.execute(
-            "INSERT OR IGNORE INTO game_meta (key, value) VALUES ('current_round', '1')"
-        )
-        conn.execute(
-            "INSERT INTO teams (name, score, position) VALUES ('Team 1', 0, 0)"
-        )
-        conn.execute(
-            "INSERT INTO teams (name, score, position) VALUES ('Team 2', 0, 1)"
-        )
-        conn.commit()
-        conn.close()
+def ensure_db_at(path):
+    """Create schema + default teams at `path` if it doesn't already exist."""
+    if not path.exists():
+        conn = sqlite3.connect(str(path), timeout=10)
+        try:
+            with open(BASE_DIR / "schema.sql") as f:
+                conn.executescript(f.read())
+            conn.execute(
+                "INSERT OR IGNORE INTO game_meta (key, value) VALUES ('current_round', '1')"
+            )
+            conn.execute(
+                "INSERT INTO teams (name, score, position) VALUES ('Team 1', 0, 0)"
+            )
+            conn.execute(
+                "INSERT INTO teams (name, score, position) VALUES ('Team 2', 0, 1)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def ensure_active_db():
+    ensure_db_at(get_active_db_path())
 
 
 def get_meta(conn, key, default=None):
@@ -245,6 +415,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_get_question(qid)
             if path == "/api/teams":
                 return self._api_get_teams()
+            if path == "/api/undo":
+                return self._api_get_undo()
+            if path == "/api/databases":
+                return self._api_list_databases()
             if path == "/api/admin/categories":
                 return self._api_admin_get_categories(qs)
             self._send_error_json("Not found", 404)
@@ -269,8 +443,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_mark_question(qid, body)
             if path == "/api/round":
                 return self._api_set_round(body)
+            if path == "/api/undo":
+                return self._api_post_undo()
+            if path == "/api/databases":
+                return self._api_create_database(body)
+            if path == "/api/databases/select":
+                return self._api_select_database(body)
             if path == "/api/reset/scores":
                 return self._api_reset_scores()
+            if path == "/api/reset/teams":
+                return self._api_reset_teams()
             if path == "/api/reset/board":
                 return self._api_reset_board()
             if path == "/api/reset/full":
@@ -279,6 +461,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_admin_add_category(body)
             if path == "/api/admin/questions":
                 return self._api_admin_add_question(body)
+            if path == "/api/exit":
+                return self._api_exit()
             self._send_error_json("Not found", 404)
         except (ValueError, TypeError) as e:
             self._send_error_json(str(e), 400)
@@ -372,10 +556,12 @@ class Handler(BaseHTTPRequestHandler):
         with DB_LOCK:
             conn = get_db()
             try:
+                previous_round = get_meta(conn, "current_round", "1")
                 set_meta(conn, "current_round", int(round_num))
                 conn.commit()
             finally:
                 conn.close()
+        set_undo("the round change", lambda: _revert_round(previous_round))
         self._send_json({"ok": True})
 
     def _api_board(self, qs):
@@ -444,6 +630,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     points = int(q["value"])
                 delta = points if correct else -points
+                previous_score = team["score"]
+                team_name = team["name"]
                 conn.execute(
                     "UPDATE teams SET score = score + ? WHERE id=?", (delta, team_id)
                 )
@@ -452,7 +640,67 @@ class Handler(BaseHTTPRequestHandler):
                 new_team = conn.execute("SELECT * FROM teams WHERE id=?", (team_id,)).fetchone()
             finally:
                 conn.close()
+        set_undo(
+            f"marking that question for {team_name}",
+            lambda: _revert_mark(qid, team_id, previous_score),
+        )
         self._send_json({"ok": True, "team": team_to_json(new_team)})
+
+    # ---- undo -------------------------------------------------------
+    def _api_get_undo(self):
+        self._send_json({"label": peek_undo_label()})
+
+    def _api_post_undo(self):
+        label, revert = pop_undo()
+        if not revert:
+            return self._send_error_json("Nothing to undo", 404)
+        revert()
+        self._send_json({"ok": True, "label": label})
+
+    # ---- databases -----------------------------------------------------
+    def _api_list_databases(self):
+        self._send_json({"databases": list_databases(), "current": get_active_db_name()})
+
+    def _api_create_database(self, body):
+        """Editor-only "Save As": copy the active database's questions into
+        a new named file, reset to a fresh unplayed state, and switch to it."""
+        name = sanitize_db_name(body.get("name"))
+        path = DB_DIR / name
+        if path.exists():
+            return self._send_error_json("A database with that name already exists", 409)
+        with DB_LOCK:
+            source = get_active_db_path()
+            if source.exists():
+                shutil.copy2(source, path)
+                conn = sqlite3.connect(str(path), timeout=10)
+                try:
+                    conn.execute("UPDATE questions SET used=0")
+                    conn.execute("DELETE FROM teams")
+                    conn.execute("INSERT INTO teams (name, score, position) VALUES ('Team 1', 0, 0)")
+                    conn.execute("INSERT INTO teams (name, score, position) VALUES ('Team 2', 0, 1)")
+                    conn.execute(
+                        "INSERT INTO game_meta (key, value) VALUES ('current_round', '1') "
+                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            else:
+                ensure_db_at(path)
+            set_active_db_name(name)
+        pop_undo()
+        self._send_json({"ok": True, "current": name})
+
+    def _api_select_database(self, body):
+        name = sanitize_db_name(body.get("name"))
+        path = DB_DIR / name
+        if not path.exists():
+            return self._send_error_json("Database not found", 404)
+        with DB_LOCK:
+            ensure_db_at(path)
+            set_active_db_name(name)
+        pop_undo()
+        self._send_json({"ok": True, "current": name})
 
     # ---- teams -------------------------------------------------------
     def _api_get_teams(self):
@@ -480,6 +728,7 @@ class Handler(BaseHTTPRequestHandler):
                 row = conn.execute("SELECT * FROM teams WHERE id=?", (cur.lastrowid,)).fetchone()
             finally:
                 conn.close()
+        set_undo(f"adding {row['name']}", lambda: _revert_add_team(row["id"]))
         self._send_json({"team": team_to_json(row)})
 
     def _api_update_team(self, team_id, body):
@@ -488,26 +737,35 @@ class Handler(BaseHTTPRequestHandler):
         with DB_LOCK:
             conn = get_db()
             try:
+                prev = conn.execute("SELECT * FROM teams WHERE id=?", (team_id,)).fetchone()
+                if not prev:
+                    return self._send_error_json("Team not found", 404)
                 if name is not None:
                     conn.execute("UPDATE teams SET name=? WHERE id=?", (name.strip() or "Team", team_id))
                 if score is not None:
                     conn.execute("UPDATE teams SET score=? WHERE id=?", (int(score), team_id))
                 conn.commit()
                 row = conn.execute("SELECT * FROM teams WHERE id=?", (team_id,)).fetchone()
-                if not row:
-                    return self._send_error_json("Team not found", 404)
             finally:
                 conn.close()
+        set_undo(
+            f"changes to {prev['name']}",
+            lambda: _revert_team_state(team_id, prev["name"], prev["score"]),
+        )
         self._send_json({"team": team_to_json(row)})
 
     def _api_delete_team(self, team_id):
         with DB_LOCK:
             conn = get_db()
             try:
+                row = conn.execute("SELECT * FROM teams WHERE id=?", (team_id,)).fetchone()
                 conn.execute("DELETE FROM teams WHERE id=?", (team_id,))
                 conn.commit()
             finally:
                 conn.close()
+        if row:
+            row_vals = dict(row)
+            set_undo(f"removing {row_vals['name']}", lambda: _revert_delete_team(row_vals))
         self._send_json({"ok": True})
 
     def _api_adjust_score(self, team_id, body):
@@ -515,15 +773,19 @@ class Handler(BaseHTTPRequestHandler):
         with DB_LOCK:
             conn = get_db()
             try:
+                row = conn.execute("SELECT * FROM teams WHERE id=?", (team_id,)).fetchone()
+                if not row:
+                    return self._send_error_json("Team not found", 404)
+                previous_score = row["score"]
+                team_name = row["name"]
                 conn.execute(
                     "UPDATE teams SET score = score + ? WHERE id=?", (int(delta), team_id)
                 )
                 conn.commit()
                 row = conn.execute("SELECT * FROM teams WHERE id=?", (team_id,)).fetchone()
-                if not row:
-                    return self._send_error_json("Team not found", 404)
             finally:
                 conn.close()
+        set_undo(f"score change for {team_name}", lambda: _revert_team_state(team_id, team_name, previous_score))
         self._send_json({"team": team_to_json(row)})
 
     # ---- resets -------------------------------------------------------
@@ -535,6 +797,23 @@ class Handler(BaseHTTPRequestHandler):
                 conn.commit()
             finally:
                 conn.close()
+        self._send_json({"ok": True})
+
+    def _api_reset_teams(self):
+        with DB_LOCK:
+            conn = get_db()
+            try:
+                previous_teams = [
+                    dict(r)
+                    for r in conn.execute("SELECT * FROM teams ORDER BY position, id").fetchall()
+                ]
+                conn.execute("DELETE FROM teams")
+                conn.execute("INSERT INTO teams (name, score, position) VALUES ('Team 1', 0, 0)")
+                conn.execute("INSERT INTO teams (name, score, position) VALUES ('Team 2', 0, 1)")
+                conn.commit()
+            finally:
+                conn.close()
+        set_undo("resetting teams", lambda: _revert_teams_snapshot(previous_teams))
         self._send_json({"ok": True})
 
     def _api_reset_board(self):
@@ -558,6 +837,14 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 conn.close()
         self._send_json({"ok": True})
+
+    def _api_exit(self):
+        self._send_json({"ok": True})
+        # Respond first, then shut down from a separate thread shortly after
+        # (server.shutdown() must not be called from the thread running
+        # serve_forever(), and would otherwise block this response from
+        # ever being flushed to the client).
+        threading.Timer(0.3, self.server.shutdown).start()
 
     # ---- admin: categories -------------------------------------------
     def _api_admin_get_categories(self, qs):
@@ -705,18 +992,38 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"ok": True})
 
 
+def clear_latex_cache():
+    for entry in CACHE_DIR.iterdir():
+        try:
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        except OSError:
+            pass
+
+
 def main():
-    ensure_db()
+    global _active_db_name
+    _migrate_legacy_db()
+    _active_db_name = _load_initial_active_name()
+    ensure_active_db()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Jeopardy server running at http://{HOST}:{PORT}/")
     print(f"  Game board:      http://localhost:{PORT}/")
     print(f"  Question editor: http://localhost:{PORT}/editor")
-    print(f"  Database file:   {DB_PATH}")
+    print(f"  Database dir:    {DB_DIR}")
+    print(f"  Active database: {get_active_db_name()}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down.")
         server.shutdown()
+    else:
+        print("\nShutting down (exit requested from the game interface).")
+    finally:
+        clear_latex_cache()
+        print(f"Cleared {CACHE_DIR}")
 
 
 if __name__ == "__main__":
