@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Classroom Jeopardy
+Comment=Launch the classroom Jeopardy game board
+Exec=/bin/bash "__SCRIPT_DIR__/launch_app.sh"
+Icon=__SCRIPT_DIR__/static/icon.png
+Terminal=false
+Categories=Education;Game;
